@@ -1,103 +1,33 @@
-import express, { type Request, Response, NextFunction } from "express";
-import { registerRoutes } from "./routes";
-import { serveStatic } from "./static";
-import { createServer } from "http";
+import { spawn } from 'child_process';
 
-const app = express();
-const httpServer = createServer(app);
+console.log("Starting Python FastAPI server via Uvicorn...");
 
-declare module "http" {
-  interface IncomingMessage {
-    rawBody: unknown;
-  }
-}
-
-app.use(
-  express.json({
-    verify: (req, _res, buf) => {
-      req.rawBody = buf;
-    },
-  }),
-);
-
-app.use(express.urlencoded({ extended: false }));
-
-export function log(message: string, source = "express") {
-  const formattedTime = new Date().toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: true,
-  });
-
-  console.log(`${formattedTime} [${source}] ${message}`);
-}
-
-app.use((req, res, next) => {
-  const start = Date.now();
-  const path = req.path;
-  let capturedJsonResponse: Record<string, any> | undefined = undefined;
-
-  const originalResJson = res.json;
-  res.json = function (bodyJson, ...args) {
-    capturedJsonResponse = bodyJson;
-    return originalResJson.apply(res, [bodyJson, ...args]);
-  };
-
-  res.on("finish", () => {
-    const duration = Date.now() - start;
-    if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
-      }
-
-      log(logLine);
-    }
-  });
-
-  next();
+// Spawn uvicorn to run the python app
+// We use 'python3' -m uvicorn to ensure we use the right python environment if path issues arise, 
+// but 'uvicorn' should be in path if installed via packager_tool.
+// Using 'uvicorn' directly.
+const pythonProcess = spawn('uvicorn', ['app.main:app', '--host', '0.0.0.0', '--port', '5000', '--reload'], {
+  stdio: 'inherit',
+  env: { ...process.env, PYTHONUNBUFFERED: "1" }
 });
 
-(async () => {
-  await registerRoutes(httpServer, app);
+pythonProcess.on('close', (code) => {
+  console.log(`Python process exited with code ${code}`);
+  process.exit(code || 0);
+});
 
-  app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
-    const status = err.status || err.statusCode || 500;
-    const message = err.message || "Internal Server Error";
+pythonProcess.on('error', (err) => {
+  console.error('Failed to start Python process:', err);
+  process.exit(1);
+});
 
-    console.error("Internal Server Error:", err);
+// Handle termination signals to kill the python process
+process.on('SIGTERM', () => {
+  pythonProcess.kill('SIGTERM');
+  process.exit(0);
+});
 
-    if (res.headersSent) {
-      return next(err);
-    }
-
-    return res.status(status).json({ message });
-  });
-
-  // importantly only setup vite in development and after
-  // setting up all the other routes so the catch-all route
-  // doesn't interfere with the other routes
-  if (process.env.NODE_ENV === "production") {
-    serveStatic(app);
-  } else {
-    const { setupVite } = await import("./vite");
-    await setupVite(httpServer, app);
-  }
-
-  // ALWAYS serve the app on the port specified in the environment variable PORT
-  // Other ports are firewalled. Default to 5000 if not specified.
-  // this serves both the API and the client.
-  // It is the only port that is not firewalled.
-  const port = parseInt(process.env.PORT || "5000", 10);
-  httpServer.listen(
-    {
-      port,
-      host: "0.0.0.0",
-      reusePort: true,
-    },
-    () => {
-      log(`serving on port ${port}`);
-    },
-  );
-})();
+process.on('SIGINT', () => {
+  pythonProcess.kill('SIGINT');
+  process.exit(0);
+});
