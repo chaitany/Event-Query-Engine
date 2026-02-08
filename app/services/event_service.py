@@ -6,6 +6,13 @@ from datetime import datetime
 class EventService:
     async def initialize_db(self):
         await event_repository.create_schema()
+        # Initial refresh if needed, but usually done via admin endpoint
+        try:
+            # First time refresh might fail if no data or not concurrent-ready
+            await db.execute("REFRESH MATERIALIZED VIEW mv_dau_daily;")
+            await db.execute("REFRESH MATERIALIZED VIEW mv_events_by_type;")
+        except:
+            pass
 
     async def create_user(self, user_data: UserCreate) -> UserResponse:
         return await event_repository.create_user(user_data)
@@ -31,6 +38,9 @@ class EventService:
     async def get_funnel_analysis(self, start_date: datetime, end_date: datetime, funnel_steps: List[str]) -> List[Dict[str, Any]]:
         return await event_repository.get_funnel_analysis(start_date, end_date, funnel_steps)
 
+    async def refresh_metrics(self):
+        await event_repository.refresh_materialized_views()
+
     async def seed_events(self):
         try:
             user = await self.create_user(UserCreate(username="demo_user", email="demo@example.com"))
@@ -43,8 +53,10 @@ class EventService:
                     EventCreate(event_type="purchase", user_id=user.id, payload={"amount": 99.99, "currency": "USD"}, timestamp=datetime.utcnow())
                 ]
                 await self.ingest_events(seeds)
-                print("Database seeded.")
+                await self.refresh_metrics()
+                print("Database seeded and metrics refreshed.")
         except Exception as e:
             print(f"Seeding failed: {e}")
 
+from app.db import db
 event_service = EventService()
