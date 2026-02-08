@@ -2,17 +2,20 @@ from app.repositories.event_repository import event_repository
 from app.models.event import EventCreate, EventResponse, UserCreate, UserResponse
 from typing import List, Union, Dict, Any
 from datetime import datetime
+import logging
+
+logger = logging.getLogger("event_analytics.service")
+
 
 class EventService:
     async def initialize_db(self):
         await event_repository.create_schema()
-        # Initial refresh if needed, but usually done via admin endpoint
         try:
-            # First time refresh might fail if no data or not concurrent-ready
             await db.execute("REFRESH MATERIALIZED VIEW mv_dau_daily;")
             await db.execute("REFRESH MATERIALIZED VIEW mv_events_by_type;")
-        except:
-            pass
+            logger.info("Initial materialized view refresh complete")
+        except Exception:
+            logger.debug("Skipped initial MV refresh (views may have no data yet)")
 
     async def create_user(self, user_data: UserCreate) -> UserResponse:
         return await event_repository.create_user(user_data)
@@ -46,7 +49,7 @@ class EventService:
             user = await self.create_user(UserCreate(username="demo_user", email="demo@example.com"))
             events = await self.get_recent_events(1)
             if not events:
-                print("Seeding database with initial events...")
+                logger.info("Seeding database with demo events")
                 seeds = [
                     EventCreate(event_type="user_signup", user_id=user.id, payload={"source": "campaign_spring"}, timestamp=datetime.utcnow()),
                     EventCreate(event_type="page_view", user_id=user.id, payload={"path": "/landing"}, timestamp=datetime.utcnow()),
@@ -54,9 +57,12 @@ class EventService:
                 ]
                 await self.ingest_events(seeds)
                 await self.refresh_metrics()
-                print("Database seeded and metrics refreshed.")
+                logger.info("Database seeded and metrics refreshed")
+            else:
+                logger.debug("Database already contains events, skipping seed")
         except Exception as e:
-            print(f"Seeding failed: {e}")
+            logger.warning("Seeding skipped or failed: %s", e)
+
 
 from app.db import db
 event_service = EventService()

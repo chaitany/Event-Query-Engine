@@ -3,16 +3,21 @@ from app.models.event import EventCreate, EventResponse, UserCreate, UserRespons
 from typing import List, Dict, Any, Optional
 import json
 import time
+import logging
 from datetime import datetime, timedelta
 import asyncio
 
+logger = logging.getLogger("event_analytics.repository")
+
+
 class EventRepository:
     def __init__(self):
-        self._cache = {}
-        self._cache_ttl = 300 # 5 minutes
+        self._cache: Dict[str, Dict] = {}
+        self._cache_ttl = 300
 
     async def create_schema(self):
-        # Users table
+        logger.info("Creating database schema (tables, indexes, materialized views)")
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
@@ -22,7 +27,6 @@ class EventRepository:
             );
         """)
 
-        # Events table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS events (
                 id SERIAL PRIMARY KEY,
@@ -33,16 +37,11 @@ class EventRepository:
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
         """)
-        
-        # Optimization indexes
-        # EXPLAIN ANALYZE justification: GIN index allows fast membership/path lookups in JSONB metadata
+
         await db.execute("CREATE INDEX IF NOT EXISTS idx_events_payload ON events USING GIN (payload);")
-        # EXPLAIN ANALYZE justification: B-tree on (type, time) optimizes both type filtering and range sorting
         await db.execute("CREATE INDEX IF NOT EXISTS idx_events_type_time ON events (event_type, timestamp DESC);")
-        # EXPLAIN ANALYZE justification: user_id index for fast lookup of user activity history
         await db.execute("CREATE INDEX IF NOT EXISTS idx_events_user_time ON events (user_id, timestamp DESC);")
 
-        # Materialized Views for heavy queries
         await db.execute("""
             CREATE MATERIALIZED VIEW IF NOT EXISTS mv_dau_daily AS
             SELECT 
@@ -53,9 +52,8 @@ class EventRepository:
             GROUP BY 1
             WITH NO DATA;
         """)
-        # Unique index required for CONCURRENT refresh
         await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dau_day ON mv_dau_daily (day);")
-        
+
         await db.execute("""
             CREATE MATERIALIZED VIEW IF NOT EXISTS mv_events_by_type AS
             SELECT 
@@ -65,15 +63,18 @@ class EventRepository:
             GROUP BY event_type
             WITH NO DATA;
         """)
-        # Unique index required for CONCURRENT refresh
         await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_event_type ON mv_events_by_type (event_type);")
 
+        logger.info("Schema creation complete")
+
     async def refresh_materialized_views(self):
-        """Refresh all materialized views used for metrics"""
+        logger.info("Refreshing materialized views concurrently")
+        start = time.time()
         await db.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dau_daily;")
         await db.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_events_by_type;")
-        # Clear cache after refresh
         self._cache = {}
+        elapsed = (time.time() - start) * 1000
+        logger.info("Materialized views refreshed in %.1fms", elapsed)
 
     async def create_user(self, user: UserCreate) -> UserResponse:
         query = """
@@ -98,7 +99,7 @@ class EventRepository:
         """
         payload_json = json.dumps(event.payload)
         row = await db.fetchrow(query, event.event_type, event.user_id, payload_json, event.timestamp)
-        
+
         payload_data = row['payload']
         if isinstance(payload_data, str):
             payload_data = json.loads(payload_data)
@@ -124,9 +125,9 @@ class EventRepository:
                     INSERT INTO events (event_type, user_id, payload, timestamp)
                     VALUES ($1, $2, $3, $4)
                 """, records)
-        
+
         latency = (time.time() - start_time) * 1000
-        print(f"Bulk ingestion of {len(events)} events completed in {latency:.2f}ms")
+        logger.info("Bulk ingestion: %d events in %.1fms", len(events), latency)
 
     async def list_events(self, limit: int = 100) -> List[EventResponse]:
         query = """
@@ -141,7 +142,7 @@ class EventRepository:
             payload_data = row['payload']
             if isinstance(payload_data, str):
                 payload_data = json.loads(payload_data)
-                
+
             results.append(EventResponse(
                 id=row['id'],
                 event_type=row['event_type'],
@@ -157,32 +158,40 @@ class EventRepository:
         if cache_key in self._cache:
             entry = self._cache[cache_key]
             if now - entry['time'] < self._cache_ttl:
+                logger.debug("Cache hit: %s", cache_key)
                 return entry['data']
-        
+
         data = await query_fn()
         self._cache[cache_key] = {'time': now, 'data': data}
         return data
 
     async def get_dau(self, start_date: datetime, end_date: datetime) -> List[Dict[str, Any]]:
         async def run_query():
-            # Use materialized view if dates match standard window, else raw query with timeout
             query = """
             SELECT day, dau FROM mv_dau_daily 
             WHERE day >= $1 AND day <= $2
             ORDER BY day DESC;
             """
             try:
-                # 5 second query timeout to prevent slow queries
                 rows = await asyncio.wait_for(db.fetch(query, start_date, end_date), timeout=5.0)
                 return [dict(row) for row in rows]
-            except (asyncio.TimeoutError, Exception):
-                # Fallback to raw query if MV fails or not refreshed
-                query = """
+            except asyncio.TimeoutError:
+                logger.warning("DAU materialized view query timed out, falling back to raw query")
+                fallback = """
                 SELECT DATE_TRUNC('day', timestamp) AS day, COUNT(DISTINCT user_id) AS dau
                 FROM events WHERE timestamp >= $1 AND timestamp <= $2 AND user_id IS NOT NULL
                 GROUP BY 1 ORDER BY 1 DESC;
                 """
-                rows = await db.fetch(query, start_date, end_date)
+                rows = await db.fetch(fallback, start_date, end_date)
+                return [dict(row) for row in rows]
+            except Exception:
+                logger.warning("DAU materialized view unavailable, using raw query", exc_info=True)
+                fallback = """
+                SELECT DATE_TRUNC('day', timestamp) AS day, COUNT(DISTINCT user_id) AS dau
+                FROM events WHERE timestamp >= $1 AND timestamp <= $2 AND user_id IS NOT NULL
+                GROUP BY 1 ORDER BY 1 DESC;
+                """
+                rows = await db.fetch(fallback, start_date, end_date)
                 return [dict(row) for row in rows]
 
         return await self._get_cached_query(f"dau_{start_date}_{end_date}", run_query)
@@ -197,15 +206,19 @@ class EventRepository:
             try:
                 rows = await asyncio.wait_for(db.fetch(query, event_type), timeout=5.0)
                 return [dict(row) for row in rows]
-            except:
-                where_clause = "WHERE timestamp >= $1 AND timestamp <= $2"
-                params = [start_date, end_date]
-                if event_type:
-                    where_clause += " AND event_type = $3"
-                    params.append(event_type)
-                query = f"SELECT event_type, COUNT(*) AS count FROM events {where_clause} GROUP BY event_type ORDER BY count DESC;"
-                rows = await db.fetch(query, *params)
-                return [dict(row) for row in rows]
+            except asyncio.TimeoutError:
+                logger.warning("Events-by-type MV query timed out, falling back to raw query")
+            except Exception:
+                logger.warning("Events-by-type MV unavailable, using raw query", exc_info=True)
+
+            where_clause = "WHERE timestamp >= $1 AND timestamp <= $2"
+            params: list = [start_date, end_date]
+            if event_type:
+                where_clause += " AND event_type = $3"
+                params.append(event_type)
+            query = f"SELECT event_type, COUNT(*) AS count FROM events {where_clause} GROUP BY event_type ORDER BY count DESC;"
+            rows = await db.fetch(query, *params)
+            return [dict(row) for row in rows]
 
         return await self._get_cached_query(f"events_by_type_{start_date}_{end_date}_{event_type}", run_query)
 
@@ -225,9 +238,9 @@ class EventRepository:
             FROM user_steps GROUP BY user_id
         )
         SELECT """ + ",\n".join([f"COUNT(step_{i}) AS count_step_{i}" for i in range(len(funnel_steps))]) + " FROM funnel_agg;"
-        
+
         row = await asyncio.wait_for(db.fetchrow(query, start_date, end_date, funnel_steps), timeout=10.0)
-        
+
         result = []
         for i, step in enumerate(funnel_steps):
             count = row[f"count_step_{i}"]
@@ -237,5 +250,6 @@ class EventRepository:
                 "conversion_rate": (count / row["count_step_0"] * 100) if row["count_step_0"] > 0 else 0
             })
         return result
+
 
 event_repository = EventRepository()

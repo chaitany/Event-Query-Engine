@@ -2,7 +2,7 @@
 
 ## Overview
 
-This is a hybrid full-stack application combining a **React frontend** with a **Python FastAPI backend**. The project is an **Event Analytics & Query Engine** that logs and queries events stored in a PostgreSQL database. The Node.js entry point (`server/index.ts`) acts as a process launcher that spawns a Python Uvicorn server. The frontend is a React SPA built with Vite, using shadcn/ui components and TailwindCSS.
+This is a **Python FastAPI backend** serving as an **Event Analytics & Query Engine**. It logs and queries events stored in PostgreSQL using asyncpg (raw SQL, no ORM). The Node.js entry point (`server/index.ts`) is a thin launcher that spawns a Python Uvicorn server on port 5000. The frontend scaffolding (React/Vite) exists from the project template but is not used — the backend is the primary artifact.
 
 ## User Preferences
 
@@ -12,105 +12,81 @@ Preferred communication style: Simple, everyday language.
 
 ### Overall Structure
 
-The project follows a **polyglot architecture** with three main directories:
-
-- **`client/`** — React frontend (Vite + TypeScript)
-- **`server/`** — Node.js entry point that spawns the Python backend
 - **`app/`** — Python FastAPI backend (the actual API server)
-- **`shared/`** — Shared TypeScript schema definitions (Drizzle ORM, mostly legacy/unused by the Python side)
-
-### Frontend Architecture
-
-- **Framework**: React 18 with TypeScript
-- **Bundler**: Vite (config in `vite.config.ts`)
-- **Routing**: Wouter (lightweight client-side router)
-- **State/Data Fetching**: TanStack React Query
-- **UI Components**: shadcn/ui (new-york style) with Radix UI primitives
-- **Styling**: TailwindCSS with CSS variables for theming, PostCSS
-- **Path Aliases**: `@/` maps to `client/src/`, `@shared/` maps to `shared/`
-- The frontend currently has minimal pages (just a 404 page) — routes need to be added in `client/src/App.tsx`
+- **`server/`** — Node.js entry point that spawns the Python backend
+- **`tests/`** — pytest test suite with isolated test schema
+- **`client/`** — React frontend (template scaffolding, not actively used)
+- **`shared/`** — Drizzle ORM schemas (legacy from template, not used by Python backend)
 
 ### Backend Architecture
 
 - **Framework**: Python FastAPI with async support
 - **Server**: Uvicorn (spawned by Node.js via `server/index.ts`)
-- **Database Driver**: asyncpg (async PostgreSQL driver)
+- **Database Driver**: asyncpg (async PostgreSQL driver, raw SQL)
 - **Configuration**: pydantic-settings loading from environment variables
-- **Architecture Pattern**: Service-Repository pattern
-  - `app/api/endpoints.py` — API route handlers
-  - `app/services/event_service.py` — Business logic layer
-  - `app/repositories/event_repository.py` — Database access layer
+- **Logging**: Python logging module with structured format (`event_analytics.*` hierarchy)
+- **Architecture Pattern**: Controller → Service → Repository
+  - `app/api/endpoints.py` — Thin route handlers (HTTP concerns only)
+  - `app/services/event_service.py` — Business logic orchestration
+  - `app/repositories/event_repository.py` — SQL queries, caching, materialized views
   - `app/models/event.py` — Pydantic models for request/response validation
-  - `app/db.py` — Database connection pool management
+  - `app/db.py` — asyncpg connection pool (singleton)
+  - `app/config.py` — Env-based config + logging configuration
+  - `app/main.py` — FastAPI app, lifespan, middleware, global error handler
 - **API Prefix**: All API routes are under `/api`
 - **Health Check**: `GET /health`
-- **Startup**: On startup, the app connects to the database, creates tables if they don't exist, and seeds demo data
+- **Startup**: Connects to DB, creates schema (idempotent), seeds demo data, refreshes MVs
 
 ### Database
 
-- **PostgreSQL** is required (connection via `DATABASE_URL` environment variable)
-- **Two table systems exist** (potential conflict):
-  1. **Python side** (active): Creates `users` and `events` tables directly via SQL in `event_repository.py`. Events table has JSONB payload with GIN indexes for analytics queries.
-  2. **Drizzle side** (legacy/unused): `shared/schema.ts` defines a `users` table with Drizzle ORM. The Drizzle config (`drizzle.config.ts`) is set up but the Python backend doesn't use it.
-- The Python-side schema is the authoritative one. The Drizzle schema in `shared/` is vestigial from the original Node.js template.
-- Schema push command: `npm run db:push` (for Drizzle — not used by the Python backend)
+- **PostgreSQL** via `DATABASE_URL` environment variable
+- **Python-side schema is authoritative** — creates `users` and `events` tables via SQL in `event_repository.py`
+- **Materialized views**: `mv_dau_daily`, `mv_events_by_type` with unique indexes for concurrent refresh
+- **Indexes**: GIN on JSONB payload, composite B-tree on (type, time) and (user_id, time)
+- **Drizzle schema** in `shared/` is vestigial from the Node.js template — not used
 
-### Server Entry Point
+### Performance Features
 
-- `server/index.ts` is a Node.js script that spawns `uvicorn app.main:app` as a child process on port 5000
-- It forwards stdio and handles SIGTERM/SIGINT for graceful shutdown
-- The `npm run dev` command runs this via `tsx`
-
-### Build System
-
-- `script/build.ts` handles production builds: builds the Vite frontend to `dist/public/` and bundles the server with esbuild to `dist/index.cjs`
-- The Express static file server (`server/static.ts`) and Vite dev middleware (`server/vite.ts`) exist but are **not actively used** since the backend is Python/FastAPI
+- Materialized views for heavy analytics aggregations
+- 5-minute in-memory cache per query signature
+- asyncio.wait_for timeouts (5s analytics, 10s funnel) with fallback to raw queries
+- Sliding-window rate limiting (100 req/min per IP)
+- Bulk ingestion via executemany in a single transaction
 
 ### Key Files
 
 | File | Purpose |
 |------|---------|
 | `server/index.ts` | Entry point — spawns Python Uvicorn |
-| `app/main.py` | FastAPI app definition and lifespan |
+| `app/main.py` | FastAPI app, lifespan, middleware, error handler |
 | `app/api/endpoints.py` | API route handlers |
 | `app/services/event_service.py` | Business logic |
-| `app/repositories/event_repository.py` | Database queries |
+| `app/repositories/event_repository.py` | SQL queries, caching, MVs |
 | `app/db.py` | asyncpg connection pool |
 | `app/models/event.py` | Pydantic models |
-| `app/config.py` | Environment config |
-| `shared/schema.ts` | Drizzle schema (legacy) |
-| `client/src/App.tsx` | React app root with router |
-| `vite.config.ts` | Vite configuration |
+| `app/config.py` | Environment config + logging setup |
+| `tests/conftest.py` | Test fixtures (isolated schema, pool, ASGI client) |
+| `README.md` | Comprehensive project documentation |
 
-## External Dependencies
+### Environment Variables
 
-### Database
-- **PostgreSQL** — Required. Connected via `DATABASE_URL` environment variable. Used by both the Python asyncpg driver and the Drizzle config (though Drizzle is not actively used).
-
-### Python Packages
-- **FastAPI** — Web framework
-- **Uvicorn** — ASGI server
-- **asyncpg** — Async PostgreSQL driver
-- **pydantic-settings** — Configuration management from environment
-
-### Node.js / Frontend Packages
-- **Vite** — Dev server and bundler
-- **React** + **ReactDOM** — UI framework
-- **TanStack React Query** — Server state management
-- **Wouter** — Client-side routing
-- **shadcn/ui** — Component library (Radix UI + Tailwind)
-- **Drizzle ORM** + **drizzle-kit** — Database ORM (configured but not actively used by the Python backend)
-- **esbuild** — Server bundling for production
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DATABASE_URL` | Yes | — | PostgreSQL connection string |
+| `LOG_LEVEL` | No | `INFO` | Python logging level |
 
 ### Testing
-- **pytest** — Test framework
-- **pytest-asyncio** — Async test support for pytest
-- **httpx** — Async HTTP client for ASGI endpoint testing
-- Tests are in `tests/` directory with isolated `test_analytics` PostgreSQL schema
-- Run all tests: `python -m pytest tests/ -v`
-- Test files: `test_database.py` (DB operations), `test_endpoints.py` (API endpoints), `test_analytics.py` (analytics queries & materialized views)
 
-### Replit-Specific
-- `@replit/vite-plugin-runtime-error-modal` — Runtime error overlay
-- `@replit/vite-plugin-cartographer` — Dev tooling (dev only)
-- `@replit/vite-plugin-dev-banner` — Dev banner (dev only)
+- **pytest** + **pytest-asyncio** + **httpx**
+- Tests use isolated `test_analytics` PostgreSQL schema
+- Run: `python -m pytest tests/ -v`
+- 25 tests: database operations (6), API endpoints (12), analytics queries (7)
+
+### Recent Changes
+
+- 2026-02-08: Added structured logging (replaced all print statements with Python logging module)
+- 2026-02-08: Added global exception handler and per-endpoint error handling (timeouts → 504, server errors → 500)
+- 2026-02-08: Added request logging middleware with latency tracking
+- 2026-02-08: Created comprehensive README.md for portfolio presentation
+- 2026-02-08: Completed test suite with 25 tests across 3 files
+- 2026-02-08: Implemented materialized views, in-memory caching, query timeouts
