@@ -1,30 +1,38 @@
 from app.repositories.event_repository import event_repository
-from app.models.event import EventCreate, EventResponse
+from app.models.event import EventCreate, EventResponse, UserCreate, UserResponse
 from typing import List
+from datetime import datetime
 
 class EventService:
     async def initialize_db(self):
-        await event_repository.create_table()
+        await event_repository.create_schema()
+
+    async def create_user(self, user_data: UserCreate) -> UserResponse:
+        return await event_repository.create_user(user_data)
 
     async def log_event(self, event_data: EventCreate) -> EventResponse:
-        return await event_repository.create(event_data)
+        return await event_repository.create_event(event_data)
 
     async def get_recent_events(self, limit: int = 100) -> List[EventResponse]:
         return await event_repository.list_events(limit)
 
     async def seed_events(self):
-        events = await self.get_recent_events(1)
-        if not events:
-            print("Seeding database with initial events...")
-            seeds = [
-                EventCreate(event_type="user_signup", payload={"email": "alice@example.com", "source": "campaign_spring"}),
-                EventCreate(event_type="page_view", payload={"path": "/landing", "referrer": "google"}),
-                EventCreate(event_type="item_view", payload={"item_id": "SKU-9982", "category": "electronics"}),
-                EventCreate(event_type="add_to_cart", payload={"item_id": "SKU-9982", "quantity": 1}),
-                EventCreate(event_type="checkout_start", payload={"cart_value": 199.50})
-            ]
-            for seed in seeds:
-                await self.log_event(seed)
-            print("Database seeded.")
+        # Check if we have users
+        try:
+            user = await self.create_user(UserCreate(username="demo_user", email="demo@example.com"))
+            
+            events = await self.get_recent_events(1)
+            if not events:
+                print("Seeding database with initial events...")
+                seeds = [
+                    EventCreate(event_type="user_signup", user_id=user.id, payload={"source": "campaign_spring"}, timestamp=datetime.utcnow()),
+                    EventCreate(event_type="page_view", user_id=user.id, payload={"path": "/landing"}, timestamp=datetime.utcnow()),
+                    EventCreate(event_type="purchase", user_id=user.id, payload={"amount": 99.99, "currency": "USD"}, timestamp=datetime.utcnow())
+                ]
+                for seed in seeds:
+                    await self.log_event(seed)
+                print("Database seeded.")
+        except Exception as e:
+            print(f"Seeding failed: {e}")
 
 event_service = EventService()
