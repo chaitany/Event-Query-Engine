@@ -15,7 +15,7 @@ class UserResponse(UserBase):
 
 class EventBase(BaseModel):
     event_type: str
-    user_id: int
+    user_id: Optional[int] = None
     payload: Dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
@@ -24,4 +24,5 @@ class EventCreate(EventBase):
 
 class EventResponse(EventBase):
     id: int
+    user_id: Optional[int] = None
     created_at: datetime

@@ -15,18 +15,31 @@ class EventRepository:
             );
         """)
 
-        # Events table optimized for high-volume writes and analytical queries
+        # Events table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS events (
                 id SERIAL PRIMARY KEY,
                 event_type VARCHAR(255) NOT NULL,
-                user_id INTEGER REFERENCES users(id),
                 payload JSONB DEFAULT '{}'::jsonb,
-                timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
         """)
         
+        # Migration: Add user_id column if missing
+        try:
+            await db.execute("ALTER TABLE events ADD COLUMN user_id INTEGER REFERENCES users(id);")
+        except Exception:
+            pass
+            
+        # Migration: Add timestamp column if missing
+        try:
+            await db.execute("ALTER TABLE events ADD COLUMN timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;")
+        except Exception:
+            pass
+            
+        # Ensure timestamp is NOT NULL
+        await db.execute("ALTER TABLE events ALTER COLUMN timestamp SET NOT NULL;")
+
         # Optimization: GIN index for JSONB payload queries
         await db.execute("CREATE INDEX IF NOT EXISTS idx_events_payload ON events USING GIN (payload);")
         
