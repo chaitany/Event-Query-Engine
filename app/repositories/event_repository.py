@@ -53,6 +53,8 @@ class EventRepository:
             GROUP BY 1
             WITH NO DATA;
         """)
+        # Unique index required for CONCURRENT refresh
+        await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_dau_day ON mv_dau_daily (day);")
         
         await db.execute("""
             CREATE MATERIALIZED VIEW IF NOT EXISTS mv_events_by_type AS
@@ -63,6 +65,8 @@ class EventRepository:
             GROUP BY event_type
             WITH NO DATA;
         """)
+        # Unique index required for CONCURRENT refresh
+        await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_mv_event_type ON mv_events_by_type (event_type);")
 
     async def refresh_materialized_views(self):
         """Refresh all materialized views used for metrics"""
