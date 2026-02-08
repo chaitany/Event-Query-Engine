@@ -102,6 +102,14 @@ The project follows a **polyglot architecture** with three main directories:
 - **Drizzle ORM** + **drizzle-kit** — Database ORM (configured but not actively used by the Python backend)
 - **esbuild** — Server bundling for production
 
+### Testing
+- **pytest** — Test framework
+- **pytest-asyncio** — Async test support for pytest
+- **httpx** — Async HTTP client for ASGI endpoint testing
+- Tests are in `tests/` directory with isolated `test_analytics` PostgreSQL schema
+- Run all tests: `python -m pytest tests/ -v`
+- Test files: `test_database.py` (DB operations), `test_endpoints.py` (API endpoints), `test_analytics.py` (analytics queries & materialized views)
+
 ### Replit-Specific
 - `@replit/vite-plugin-runtime-error-modal` — Runtime error overlay
 - `@replit/vite-plugin-cartographer` — Dev tooling (dev only)
