@@ -1,6 +1,6 @@
 from app.db import db
 from app.models.event import EventCreate, EventResponse, UserCreate, UserResponse
-from typing import List
+from typing import List, Dict, Any
 import json
 import time
 
@@ -72,17 +72,12 @@ class EventRepository:
 
     async def bulk_insert_events(self, events: List[EventCreate]):
         start_time = time.time()
-        # Prepare data for bulk insert using COPY or transaction
-        # asyncpg.connection.copy_records_to_table is fast but needs raw records
-        # We'll use a transaction with multiple inserts as a fallback or executemany
         async with db.pool.acquire() as connection:
             async with connection.transaction():
-                # Prepare records
                 records = [
                     (e.event_type, e.user_id, json.dumps(e.payload), e.timestamp)
                     for e in events
                 ]
-                # Using executemany for batch insertion
                 await connection.executemany("""
                     INSERT INTO events (event_type, user_id, payload, timestamp)
                     VALUES ($1, $2, $3, $4)
@@ -114,5 +109,108 @@ class EventRepository:
                 created_at=row['created_at']
             ))
         return results
+
+    # --- Analytics Queries ---
+
+    async def get_dau(self, start_date: str, end_date: str) -> List[Dict[str, Any]]:
+        """
+        Daily Active Users (DAU) using CTE and grouping.
+        Identifies unique users per day based on their event timestamps.
+        """
+        query = """
+        WITH daily_users AS (
+            SELECT 
+                DATE_TRUNC('day', timestamp) AS day,
+                user_id
+            FROM events
+            WHERE timestamp >= $1::timestamp AND timestamp <= $2::timestamp
+            AND user_id IS NOT NULL
+            GROUP BY 1, 2
+        )
+        SELECT 
+            day,
+            COUNT(DISTINCT user_id) AS dau
+        FROM daily_users
+        GROUP BY day
+        ORDER BY day DESC;
+        """
+        rows = await db.fetch(query, start_date, end_date)
+        return [dict(row) for row in rows]
+
+    async def get_events_by_type(self, start_date: str, end_date: str, event_type: str = None) -> List[Dict[str, Any]]:
+        """
+        Count events grouped by event_type.
+        Supports filtering by specific event_type if provided.
+        """
+        where_clause = "WHERE timestamp >= $1::timestamp AND timestamp <= $2::timestamp"
+        params = [start_date, end_date]
+        
+        if event_type:
+            where_clause += " AND event_type = $3"
+            params.append(event_type)
+            
+        query = f"""
+        SELECT 
+            event_type,
+            COUNT(*) AS count
+        FROM events
+        {where_clause}
+        GROUP BY event_type
+        ORDER BY count DESC;
+        """
+        rows = await db.fetch(query, *params)
+        return [dict(row) for row in rows]
+
+    async def get_funnel_analysis(self, start_date: str, end_date: str, funnel_steps: List[str]) -> List[Dict[str, Any]]:
+        """
+        Funnel analysis across multiple event types using Window Functions.
+        Calculates conversion rates by checking if users completed subsequent steps in order.
+        """
+        if not funnel_steps:
+            return []
+
+        # Use window functions to find the first time a user performed each step
+        query = """
+        WITH user_steps AS (
+            SELECT 
+                user_id,
+                event_type,
+                MIN(timestamp) AS first_step_time
+            FROM events
+            WHERE timestamp >= $1::timestamp AND timestamp <= $2::timestamp
+            AND event_type = ANY($3)
+            AND user_id IS NOT NULL
+            GROUP BY user_id, event_type
+        ),
+        funnel_agg AS (
+            SELECT
+                user_id,
+                """ + ",\n".join([
+                    f"MIN(CASE WHEN event_type = '{step}' THEN first_step_time END) AS step_{i}"
+                    for i, step in enumerate(funnel_steps)
+                ]) + """
+            FROM user_steps
+            GROUP BY user_id
+        )
+        SELECT
+            """ + ",\n".join([
+                f"COUNT(step_{i}) AS count_step_{i}"
+                for i in range(len(funnel_steps))
+            ]) + """
+        FROM funnel_agg;
+        """
+        
+        row = await db.fetchrow(query, start_date, end_date, funnel_steps)
+        
+        # Format output into steps
+        result = []
+        for i, step in enumerate(funnel_steps):
+            count = row[f"count_step_{i}"]
+            result.append({
+                "step_name": step,
+                "count": count,
+                "conversion_rate": (count / row["count_step_0"] * 100) if row["count_step_0"] > 0 else 0
+            })
+        return result
 
 event_repository = EventRepository()

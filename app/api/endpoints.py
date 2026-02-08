@@ -1,13 +1,13 @@
 from fastapi import APIRouter, HTTPException, Query, Request
 from app.models.event import EventCreate, EventResponse
 from app.services.event_service import event_service
-from typing import List, Union
+from typing import List, Union, Dict, Any
 import time
+from datetime import datetime, timedelta
 
 router = APIRouter()
 
 # Simple in-memory rate limiting (for demo purposes)
-# In production, use Redis or a similar store
 RATE_LIMIT = {}
 MAX_REQUESTS = 100
 WINDOW = 60 # seconds
@@ -44,3 +44,40 @@ async def ingest_events(request: Request, events: Union[EventCreate, List[EventC
 @router.get("/events", response_model=List[EventResponse])
 async def list_events(limit: int = Query(100, ge=1, le=1000)):
     return await event_service.get_recent_events(limit)
+
+# --- Analytics Endpoints ---
+
+@router.get("/analytics/dau")
+async def get_dau(
+    start_date: str = Query(None),
+    end_date: str = Query(None)
+):
+    if not start_date:
+        start_date = (datetime.utcnow() - timedelta(days=30)).isoformat()
+    if not end_date:
+        end_date = datetime.utcnow().isoformat()
+    return await event_service.get_dau(start_date, end_date)
+
+@router.get("/analytics/events-by-type")
+async def get_events_by_type(
+    start_date: str = Query(None),
+    end_date: str = Query(None),
+    event_type: str = Query(None)
+):
+    if not start_date:
+        start_date = (datetime.utcnow() - timedelta(days=30)).isoformat()
+    if not end_date:
+        end_date = datetime.utcnow().isoformat()
+    return await event_service.get_events_by_type(start_date, end_date, event_type)
+
+@router.get("/analytics/funnel")
+async def get_funnel_analysis(
+    start_date: str = Query(None),
+    end_date: str = Query(None),
+    steps: List[str] = Query(["user_signup", "page_view", "purchase"])
+):
+    if not start_date:
+        start_date = (datetime.utcnow() - timedelta(days=30)).isoformat()
+    if not end_date:
+        end_date = datetime.utcnow().isoformat()
+    return await event_service.get_funnel_analysis(start_date, end_date, steps)
