@@ -49,35 +49,35 @@ async def list_events(limit: int = Query(100, ge=1, le=1000)):
 
 @router.get("/analytics/dau")
 async def get_dau(
-    start_date: str = Query(None),
-    end_date: str = Query(None)
+    start_date: datetime = Query(None),
+    end_date: datetime = Query(None)
 ):
     if not start_date:
-        start_date = (datetime.utcnow() - timedelta(days=30)).isoformat()
+        start_date = datetime.utcnow() - timedelta(days=30)
     if not end_date:
-        end_date = datetime.utcnow().isoformat()
+        end_date = datetime.utcnow()
     return await event_service.get_dau(start_date, end_date)
 
 @router.get("/analytics/events-by-type")
 async def get_events_by_type(
-    start_date: str = Query(None),
-    end_date: str = Query(None),
+    start_date: datetime = Query(None),
+    end_date: datetime = Query(None),
     event_type: str = Query(None)
 ):
     if not start_date:
-        start_date = (datetime.utcnow() - timedelta(days=30)).isoformat()
+        start_date = datetime.utcnow() - timedelta(days=30)
     if not end_date:
-        end_date = datetime.utcnow().isoformat()
+        end_date = datetime.utcnow()
     return await event_service.get_events_by_type(start_date, end_date, event_type)
 
 @router.get("/analytics/funnel")
 async def get_funnel_analysis(
-    start_date: str = Query(None),
-    end_date: str = Query(None),
+    start_date: datetime = Query(None),
+    end_date: datetime = Query(None),
     steps: List[str] = Query(["user_signup", "page_view", "purchase"])
 ):
     if not start_date:
-        start_date = (datetime.utcnow() - timedelta(days=30)).isoformat()
+        start_date = datetime.utcnow() - timedelta(days=30)
     if not end_date:
-        end_date = datetime.utcnow().isoformat()
+        end_date = datetime.utcnow()
     return await event_service.get_funnel_analysis(start_date, end_date, steps)

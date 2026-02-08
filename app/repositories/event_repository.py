@@ -3,6 +3,7 @@ from app.models.event import EventCreate, EventResponse, UserCreate, UserRespons
 from typing import List, Dict, Any
 import json
 import time
+from datetime import datetime
 
 class EventRepository:
     async def create_schema(self):
@@ -112,7 +113,7 @@ class EventRepository:
 
     # --- Analytics Queries ---
 
-    async def get_dau(self, start_date: str, end_date: str) -> List[Dict[str, Any]]:
+    async def get_dau(self, start_date: datetime, end_date: datetime) -> List[Dict[str, Any]]:
         """
         Daily Active Users (DAU) using CTE and grouping.
         Identifies unique users per day based on their event timestamps.
@@ -123,7 +124,7 @@ class EventRepository:
                 DATE_TRUNC('day', timestamp) AS day,
                 user_id
             FROM events
-            WHERE timestamp >= $1::timestamp AND timestamp <= $2::timestamp
+            WHERE timestamp >= $1 AND timestamp <= $2
             AND user_id IS NOT NULL
             GROUP BY 1, 2
         )
@@ -137,12 +138,12 @@ class EventRepository:
         rows = await db.fetch(query, start_date, end_date)
         return [dict(row) for row in rows]
 
-    async def get_events_by_type(self, start_date: str, end_date: str, event_type: str = None) -> List[Dict[str, Any]]:
+    async def get_events_by_type(self, start_date: datetime, end_date: datetime, event_type: str = None) -> List[Dict[str, Any]]:
         """
         Count events grouped by event_type.
         Supports filtering by specific event_type if provided.
         """
-        where_clause = "WHERE timestamp >= $1::timestamp AND timestamp <= $2::timestamp"
+        where_clause = "WHERE timestamp >= $1 AND timestamp <= $2"
         params = [start_date, end_date]
         
         if event_type:
@@ -161,7 +162,7 @@ class EventRepository:
         rows = await db.fetch(query, *params)
         return [dict(row) for row in rows]
 
-    async def get_funnel_analysis(self, start_date: str, end_date: str, funnel_steps: List[str]) -> List[Dict[str, Any]]:
+    async def get_funnel_analysis(self, start_date: datetime, end_date: datetime, funnel_steps: List[str]) -> List[Dict[str, Any]]:
         """
         Funnel analysis across multiple event types using Window Functions.
         Calculates conversion rates by checking if users completed subsequent steps in order.
@@ -177,7 +178,7 @@ class EventRepository:
                 event_type,
                 MIN(timestamp) AS first_step_time
             FROM events
-            WHERE timestamp >= $1::timestamp AND timestamp <= $2::timestamp
+            WHERE timestamp >= $1 AND timestamp <= $2
             AND event_type = ANY($3)
             AND user_id IS NOT NULL
             GROUP BY user_id, event_type

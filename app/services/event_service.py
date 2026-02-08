@@ -22,13 +22,13 @@ class EventService:
     async def get_recent_events(self, limit: int = 100) -> List[EventResponse]:
         return await event_repository.list_events(limit)
 
-    async def get_dau(self, start_date: str, end_date: str) -> List[Dict[str, Any]]:
+    async def get_dau(self, start_date: datetime, end_date: datetime) -> List[Dict[str, Any]]:
         return await event_repository.get_dau(start_date, end_date)
 
-    async def get_events_by_type(self, start_date: str, end_date: str, event_type: str = None) -> List[Dict[str, Any]]:
+    async def get_events_by_type(self, start_date: datetime, end_date: datetime, event_type: str = None) -> List[Dict[str, Any]]:
         return await event_repository.get_events_by_type(start_date, end_date, event_type)
 
-    async def get_funnel_analysis(self, start_date: str, end_date: str, funnel_steps: List[str]) -> List[Dict[str, Any]]:
+    async def get_funnel_analysis(self, start_date: datetime, end_date: datetime, funnel_steps: List[str]) -> List[Dict[str, Any]]:
         return await event_repository.get_funnel_analysis(start_date, end_date, funnel_steps)
 
     async def seed_events(self):
