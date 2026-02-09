@@ -2,7 +2,30 @@
 
 A production-ready event ingestion and analytics API built with **Python 3.11**, **FastAPI**, and **asyncpg** (raw SQL, no ORM). Designed to demonstrate clean backend architecture, async PostgreSQL patterns, and practical scalability tradeoffs.
 
+This project demonstrates strong backend engineering fundamentals, including schema design, query optimization, indexing strategy, and performance analysis using **EXPLAIN ANALYZE**.
+
 ---
+
+## Features
+
+### Event Ingestion
+- Async event ingestion API using FastAPI
+- Supports single and batch event ingestion
+- Transactional writes for batch inserts
+- Input validation using Pydantic
+- Designed for high-volume write workloads
+
+### Analytics APIs
+- Daily Active Users (DAU)
+- Events grouped by type and date
+- Time-range based analytics queries
+- Query logic implemented using raw SQL (no ORM abstraction)
+
+### PostgreSQL-First Design
+- JSONB metadata storage with GIN indexing
+- Composite indexes for analytics workloads
+- Window functions, CTEs, and aggregations
+- Query performance validation using **EXPLAIN ANALYZE**
 
 ## Architecture
 
@@ -74,22 +97,7 @@ CREATE TABLE events (
 | `idx_events_type_time` | B-tree | `(event_type, timestamp DESC)` | Composite index for type filtering + time-range scans |
 | `idx_events_user_time` | B-tree | `(user_id, timestamp DESC)` | User activity lookups ordered by recency |
 
-### Materialized Views
-
-```sql
--- Daily active users, refreshed via admin endpoint
-CREATE MATERIALIZED VIEW mv_dau_daily AS
-SELECT DATE_TRUNC('day', timestamp) AS day, COUNT(DISTINCT user_id) AS dau
-FROM events WHERE user_id IS NOT NULL GROUP BY 1;
-
--- Event counts by type
-CREATE MATERIALIZED VIEW mv_events_by_type AS
-SELECT event_type, COUNT(*) AS count FROM events GROUP BY event_type;
-```
-
-Both have unique indexes to support `REFRESH MATERIALIZED VIEW CONCURRENTLY`, which avoids locking the view during refresh.
-
----
+- Indexes were validated using **EXPLAIN ANALYZE**
 
 ## API Reference
 
@@ -169,80 +177,24 @@ POST /api/admin/refresh-metrics
 
 Triggers concurrent refresh of all materialized views. Clears the in-memory cache.
 
-### OpenAPI Docs
-
-Interactive Swagger UI at `/docs` and ReDoc at `/redoc`.
-
----
-
-## Sample curl Commands
-
-```bash
-# Health check
-curl http://localhost:5000/health
-
-# Ingest a single event
-curl -X POST http://localhost:5000/api/events \
-  -H "Content-Type: application/json" \
-  -d '{"event_type": "page_view", "user_id": 1, "payload": {"path": "/pricing"}}'
-
-# Batch ingest
-curl -X POST http://localhost:5000/api/events \
-  -H "Content-Type: application/json" \
-  -d '[
-    {"event_type": "user_signup", "user_id": 2, "payload": {"source": "organic"}},
-    {"event_type": "page_view", "user_id": 2, "payload": {"path": "/dashboard"}},
-    {"event_type": "purchase", "user_id": 2, "payload": {"amount": 29.99, "currency": "USD"}}
-  ]'
-
-# List recent events
-curl http://localhost:5000/api/events?limit=10
-
-# DAU for a date range
-curl "http://localhost:5000/api/analytics/dau?start_date=2026-01-01T00:00:00Z&end_date=2026-02-08T23:59:59Z"
-
-# Events by type (all types)
-curl http://localhost:5000/api/analytics/events-by-type
-
-# Events by type (filtered)
-curl "http://localhost:5000/api/analytics/events-by-type?event_type=purchase"
-
-# Funnel analysis
-curl "http://localhost:5000/api/analytics/funnel?steps=user_signup&steps=page_view&steps=purchase"
-
-# Refresh materialized views
-curl -X POST http://localhost:5000/api/admin/refresh-metrics
-```
-
 ---
 
 ## Environment Variables
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `DATABASE_URL` | Yes | — | PostgreSQL connection string (e.g., `postgresql://user:pass@host:5432/dbname`) |
+| `DATABASE_URL` | Yes | — | PostgreSQL connection string (e.g., `postgresql://user:pass@host:/dbname`) |
 | `LOG_LEVEL` | No | `INFO` | Python logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) |
-
-On Replit, `DATABASE_URL` is automatically provided when a PostgreSQL database is attached to the project.
 
 ---
 
 ## Running the Project
 
-### On Replit
-
-Click **Run**. The workflow executes `npm run dev`, which spawns uvicorn via `server/index.ts`. The API is available at port 5000. On startup the app:
-
-1. Connects to PostgreSQL and creates the connection pool
-2. Runs schema creation (tables, indexes, materialized views) — all idempotent
-3. Seeds demo data if the database is empty
-4. Refreshes materialized views
-
 ### Locally
 
 ```bash
 # Requires Python 3.11+ and a running PostgreSQL instance
-export DATABASE_URL="postgresql://user:pass@localhost:5432/events_db"
+export DATABASE_URL="postgresql://user:pass@localhost:/events_db"
 
 pip install fastapi uvicorn asyncpg pydantic-settings
 
@@ -259,7 +211,7 @@ Tests use an isolated `test_analytics` PostgreSQL schema — they never touch pr
 
 - **Database operations** (6): User CRUD, unique constraints, event insertion, JSONB queries, bulk insert, ordering
 - **API endpoints** (12): Health check, single/batch ingestion, validation errors, event listing, all analytics endpoints, admin refresh
-- **Analytics queries** (7): Materialized view population/refresh, DAU calculation, null-user exclusion, funnel step ordering, event aggregation
+- **Analytics queries** (7): DAU calculation, null-user exclusion, funnel step ordering, event aggregation
 
 ---
 
@@ -276,30 +228,6 @@ Tests use an isolated `test_analytics` PostgreSQL schema — they never touch pr
 | **GIN index on JSONB** | `idx_events_payload` | Enables fast payload filtering; slight write overhead per insert |
 | **Composite B-tree indexes** | `(event_type, timestamp DESC)`, `(user_id, timestamp DESC)` | Covers the most common query patterns without requiring index-only scans |
 | **Rate limiting** | In-memory sliding window (100 req/min per IP) | Protects against burst traffic; not distributed — each worker has its own counter |
-
-### What Would Change at Scale
-
-**Single-worker limitations:**
-- In-memory cache and rate limiting are process-local. At multiple workers, switch to Redis for shared state.
-- Rate limiting uses an unbounded dict — add periodic cleanup or use a fixed-size LRU.
-
-**Materialized view refresh:**
-- Currently manual via admin endpoint. In production, schedule with `pg_cron` or an external scheduler (e.g., Celery beat) at 5–15 minute intervals depending on freshness requirements.
-- `REFRESH CONCURRENTLY` is non-blocking for reads but still incurs full recomputation. For very large tables (100M+ rows), consider incremental materialized views or a streaming aggregation layer (e.g., ksqlDB, Materialize).
-
-**Event ingestion at high volume:**
-- `executemany` is sufficient for moderate throughput. For sustained high-volume ingestion (>10K events/sec), switch to `COPY` protocol via `connection.copy_records_to_table()` which bypasses per-row parsing.
-- Consider buffering writes with an async queue (e.g., asyncio.Queue → batch writer task) to decouple HTTP response latency from DB write latency.
-
-**Funnel query:**
-- Current CTE-based approach scans the full event range. For large datasets, pre-aggregate user-step pairs into a summary table, or use window functions with partitioned tables.
-- Step names are interpolated into SQL via f-string. This is safe because step values come from query parameters validated by FastAPI, but a parameterized approach using array operations would be more defensive.
-
-**Horizontal scaling:**
-- The API is stateless (aside from process-local cache/rate-limit). Deploy behind a load balancer with multiple uvicorn workers (`--workers N`) or Gunicorn with uvicorn workers.
-- Move cache to Redis. Move rate limiting to Redis or an API gateway (e.g., Kong, nginx rate limiting module).
-
----
 
 ## Logging
 
@@ -346,3 +274,9 @@ Set `LOG_LEVEL=DEBUG` to see cache hit/miss details and MV fallback reasoning.
 | Config | pydantic-settings | Type-safe env var loading with `.env` support |
 | Testing | pytest + pytest-asyncio + httpx | Async test support with ASGI transport for endpoint tests |
 | Database | PostgreSQL | JSONB support, materialized views, GIN indexes |
+
+## Future Improvements
+- Incremental aggregation jobs
+- Partitioning events table by time
+- Caching layer for hot analytics endpoints
+- Role-based access control for admin endpoints
