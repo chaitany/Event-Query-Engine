@@ -1,0 +1,14 @@
+# Render Blueprint: FastAPI + asyncpg. Postgres is external (e.g. Neon); paste its URL when prompted.
+services:
+  - type: web
+    name: event-query-engine
+    runtime: python
+    plan: free
+    buildCommand: uv sync --frozen
+    startCommand: uv run --frozen uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips="*"
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: DATABASE_URL
+        sync: false
