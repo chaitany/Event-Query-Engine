@@ -1,7 +1,7 @@
 [project]
-name = "repl-nix-workspace"
+name = "event-query-enginer"
 version = "0.1.0"
-description = "Add your description here"
+description = "A production-ready event ingestion and analytics API built with Python, FastAPI, and asyncpg (raw SQL, no ORM)."
 requires-python = ">=3.11"
 dependencies = [
     "asyncpg>=0.31.0",

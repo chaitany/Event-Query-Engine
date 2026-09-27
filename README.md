@@ -200,6 +200,7 @@ pip install fastapi uvicorn asyncpg pydantic-settings
 
 uvicorn app.main:app --host 0.0.0.0 --port 5000 --reload
 ```
+- First load may take ~1 minute.
 
 ### Running Tests
 
